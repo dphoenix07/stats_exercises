@@ -1,0 +1,111 @@
+---
+title: "Ozone Risk Analysis"
+author: "Daniel Phoenix"
+output: rmarkdown::github_document
+---
+
+```{r echo=FALSE}
+library(ggplot2)
+library(dplyr)
+library(MCMCpack)
+library(arm)
+library(extRemes)
+library(xts)
+```
+
+
+Read in the yearly CSV files of Ozone for Dallas, TX (row 14 is ozone)
+```{r}
+data <- read.csv("~/Documents/GitHub/hurricanes_dfw_airQuality/data/o3_data/dallas_2017.csv")[,10:14]
+names(data) <- c("local_date","local_hour","utc_date","utc_hour","ozone_ppm")
+data <- data %>% mutate(ozone_ppb = ozone_ppm*1.0E3)
+head(data,30)
+```
+
+Plot Ozone timeseries
+```{r}
+ggplot(data, aes(x=local_date, y=ozone_ppb)) + geom_point() + ggtitle("Hourly Ozone Concentration at Dallas, TX for 2017") + theme_bw()
+```
+
+Plot PDF of Ozone concentrations
+```{r}
+ggplot(data, aes(ozone_ppb)) + geom_histogram(bins=50,alpha=0.4,color='black') + ggtitle("Distribution of Hourly Ozone Concentrations at Dallas, TX for 2017") + theme_bw()
+```
+
+Cumulative distribution for ozone concentration
+```{r}
+plot(ecdf(data$ozone_ppb))
+cdf_ozone <- ecdf(data$ozone_ppb)
+```
+
+
+Calculate return period
+```{r}
+ozone_thres <- 80
+prob_exceed <- (1-cdf_ozone(ozone_thres))
+#tau_ozone <- e_l / prob_exceed
+
+print(prob_exceed)*100
+```
+
+
+Need to derive return period --> use bayesian framework w/ MCMC algorithm
+
+This approach for modeling extremes of a time-series of observations is based on the utilization of maximum or minimum values of these observations within a certain sequence of constant length. For a sufficiently large number n of established blocks, the resulting peak values of these n blocks of equal length can be used for fitting a suitable distribution of these data. While the block size is basically freely selectable, a trade-off has to be made between bias (small blocks) and variance (large blocks). Usually, the length of the sequences is often chosen to correspond to a certain familiar time period, in most cases a year (we'll do daily max ozone here). The resulting vector of annual maxima is called "Annual Maxima Series" or AMS.
+
+According to the Fisher–Tippett–Gnedenko theorem, the distribution of block maxima can be approximated by a generalized extreme value distribution.
+```{r}
+data$local_date <- as.Date(data$local_date)
+ozone_ts <- xts(data$ozone_ppb, data$local_date)
+ams <- apply.daily(ozone_ts, max)
+
+# Derive AMS for maximum ozone
+fit_mle <- fevd(as.vector(ams), method="MLE", type="GEV")
+plot(fit_mle)
+```
+
+Print the return levels
+```{r}
+rl_mle <- return.level(fit_mle, conf = 0.05, return.period= c(2,5,10,20,50,100))
+rl_mle
+```
+
+Fitting of GEV distribution based on L-moments estimation
+```{r}
+fit_lmom <- fevd(as.vector(ams), method="Lmoments", type="GEV")
+plot(fit_lmom)
+
+rl_lmom <- return.level(fit_lmom, conf = 0.05, return.period= c(2,5,10,20,50,100))
+rl_lmom
+```
+Return Level Plots
+```{r}
+#par(mfcol=c(2,1))
+
+# return level plot w/ MLE
+plot(fit_mle, type="rl",
+     main="Return Level Plot for Dallas w/ MLE",
+     ylim=c(0,200), pch=16)
+loc <- as.numeric(return.level(fit_mle, conf=0.05, return.period = 50))
+segments(50, 0, 50, loc, col='midnightblue', lty=6)
+segments(0.01, loc, 50, loc, col='midnightblue', lty=6)
+
+## return level plot w/ LMOM
+#plot(fit_lmom, type='rl',
+#     main="Return Level Plot for Dallas w/ L-Moments",
+#     ylim=c(0,200))
+#loc <- as.numeric(return.level(fit_lmom, conf=0.05, return.period=50))
+#segments(50, 0, 50, loc, col= 'midnightblue',lty=6)
+#segments(0.01,loc,50, loc, col='midnightblue', lty=6)
+
+```
+
+```{r}
+# comparison of return levels
+results <- t(data.frame(mle=as.numeric(rl_mle),
+                        lmom=as.numeric(rl_lmom)))
+colnames(results) <- c(2,5,10,20,50,100)
+round(results,1)
+```
+
+In this case, both results are quite similar. In most cases, L-moments estimation is more robust than maximum likelihood estimation. In addition to these classical estimation methods, extRemes offers Generalized Maximum Likelihood Estimation (GMLE, Martins and Stedinger, 2000) and Bayesian estimation methods (Gilleland and Katz, 2016). Moreover, I have made the observation that maximum likelihood estimation works more reliable in other R packages in some cases (e.g. fExtremes, ismev).
